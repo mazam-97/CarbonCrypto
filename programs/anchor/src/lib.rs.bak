@@ -1,0 +1,293 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{Mint, Token, TokenAccount, initialize_mint, mint_to, burn, create_account, InitializeMint, MintTo, Burn, CreateAccount};
+// Import Metaplex types for NFT Minting
+use anchor_spl::metadata::{
+    create_master_edition_v3, create_metadata_accounts_v3, 
+    CreateMasterEditionV3, CreateMetadataAccountsV3, 
+    Metadata,
+};
+use mpl_token_metadata::types::DataV2;
+
+declare_id!("F1pN8uizaEUJhc6t5SGaoyVDz8Tf29t9Z37jQCdhe7Kd");
+
+#[program]
+pub mod carbon_credit_tokenizer {
+    use super::*;
+
+    /// Initialize the registry and set the authority
+    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+        registry.authority = ctx.accounts.authority.key();
+        registry.batch_counter = 0;
+        Ok(())
+    }
+
+    /// Mints a formal Batch NFT (Toucan Style)
+    pub fn mint_batch_nft(
+        ctx: Context<MintBatchNFT>, 
+        name: String, 
+        symbol: String, 
+        uri: String
+    ) -> Result<()> {
+        let registry = &mut ctx.accounts.registry;
+        registry.batch_counter += 1;
+        let token_id = registry.batch_counter;
+
+        // 1. Create Metadata Account for the NFT
+        let cpi_context = CpiContext::new(
+            ctx.accounts.token_metadata_program.to_account_info(),
+            CreateMetadataAccountsV3 {
+                metadata: ctx.accounts.metadata.to_account_info(),
+                mint: ctx.accounts.nft_mint.to_account_info(),
+                mint_authority: ctx.accounts.user.to_account_info(),
+                payer: ctx.accounts.user.to_account_info(),
+                update_authority: ctx.accounts.user.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+        );
+
+        let data_v2 = DataV2 {
+            name: name,
+            symbol: symbol,
+            uri: uri.clone(),
+            seller_fee_basis_points: 0,
+            creators: None,
+            collection: None,
+            uses: None,
+        };
+
+        create_metadata_accounts_v3(cpi_context, data_v2, false, true, None)?;
+
+        // 2. Mint 1 token to the user's associated token account
+        let mint_context = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            anchor_spl::token::MintTo {
+                mint: ctx.accounts.nft_mint.to_account_info(),
+                to: ctx.accounts.nft_token_account.to_account_info(),
+                authority: ctx.accounts.user.to_account_info(),
+            },
+        );
+        anchor_spl::token::mint_to(mint_context, 1)?;
+
+        // 3. Create Master Edition (Makes it a unique 1/1 NFT)
+        let edition_context = CpiContext::new(
+            ctx.accounts.token_metadata_program.to_account_info(),
+            CreateMasterEditionV3 {
+                edition: ctx.accounts.master_edition.to_account_info(),
+                metadata: ctx.accounts.metadata.to_account_info(),
+                mint: ctx.accounts.nft_mint.to_account_info(),
+                mint_authority: ctx.accounts.user.to_account_info(),
+                payer: ctx.accounts.user.to_account_info(),
+                update_authority: ctx.accounts.user.to_account_info(),
+                system_program: ctx.accounts.system_program.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+                rent: ctx.accounts.rent.to_account_info(),
+            },
+        );
+
+        create_master_edition_v3(edition_context, Some(0))?;
+
+        // 3. Save internal tracking data
+        let batch = &mut ctx.accounts.batch_data;
+        batch.nft_mint = ctx.accounts.nft_mint.key();
+        batch.owner = ctx.accounts.user.key();
+        batch.status = BatchStatus::Pending;
+        batch.uri = uri;
+        batch.token_id = token_id;
+
+        Ok(())
+    }
+
+    /// Update batch data with serial number, quantity, and metadata URI
+    pub fn update_batch_with_data(
+        ctx: Context<UpdateBatchData>,
+        serial_number: String,
+        quantity: u64,
+        uri: String,
+    ) -> Result<()> {
+        let batch = &mut ctx.accounts.batch;
+        
+        // Only allow updating pending batches
+        require!(matches!(batch.status, BatchStatus::Pending), ErrorCode::InvalidBatchStatus);
+        
+        batch.serial_number = serial_number;
+        batch.quantity = quantity;
+        batch.uri = uri;
+        
+        Ok(())
+    }
+
+    /// Link batch with a project vintage
+    pub fn link_with_vintage(
+        ctx: Context<LinkWithVintage>,
+        vintage_id: u64,
+    ) -> Result<()> {
+        let batch = &mut ctx.accounts.batch;
+        
+        // Only allow linking pending batches
+        require!(matches!(batch.status, BatchStatus::Pending), ErrorCode::InvalidBatchStatus);
+        
+        batch.project_vintage_id = vintage_id;
+        
+        Ok(())
+    }
+
+    /// Confirm a batch for tokenization (admin only)
+    pub fn confirm_batch(ctx: Context<ConfirmBatch>) -> Result<()> {
+        let batch = &mut ctx.accounts.batch;
+        let registry = &ctx.accounts.registry;
+        
+        // Only admin can confirm batches
+        require!(registry.authority == ctx.accounts.verifier.key(), ErrorCode::Unauthorized);
+        
+        // Only allow confirming pending batches
+        require!(matches!(batch.status, BatchStatus::Pending), ErrorCode::InvalidBatchStatus);
+        
+        batch.status = BatchStatus::Confirmed;
+        
+        Ok(())
+    }
+
+    /// Reject a batch with a reason (admin only)
+    pub fn reject_batch(
+        ctx: Context<RejectBatch>,
+        comment: String,
+    ) -> Result<()> {
+        let batch = &mut ctx.accounts.batch;
+        let registry = &ctx.accounts.registry;
+        
+        // Only admin can reject batches
+        require!(registry.authority == ctx.accounts.verifier.key(), ErrorCode::Unauthorized);
+        
+        // Only allow rejecting pending batches
+        require!(matches!(batch.status, BatchStatus::Pending), ErrorCode::InvalidBatchStatus);
+        
+        // Store rejection reason in URI field for simplicity
+        batch.uri = format!("REJECTED: {}", comment);
+        batch.status = BatchStatus::Confirmed; // Move to confirmed but marked as rejected
+        
+        Ok(())
+    }
+
+    
+}
+
+#[derive(Accounts)]
+pub struct UpdateBatchData<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, Registry>,
+    
+    #[account(mut)]
+    pub batch: Account<'info, Batch>,
+    
+    pub verifier: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct LinkWithVintage<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, Registry>,
+    
+    #[account(mut)]
+    pub batch: Account<'info, Batch>,
+    
+    pub verifier: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct ConfirmBatch<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, Registry>,
+    
+    #[account(mut)]
+    pub batch: Account<'info, Batch>,
+    
+    pub verifier: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct RejectBatch<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, Registry>,
+    
+    #[account(mut)]
+    pub batch: Account<'info, Batch>,
+    
+    pub verifier: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct FractionalizeBatch<'info> {
+    #[account(mut)]
+    pub registry: Account<'info, Registry>,
+    
+    #[account(mut)]
+    pub batch: Account<'info, Batch>,
+    
+    /// The NFT mint that will be burned
+    #[account(mut)]
+    pub nft_mint: Account<'info, Mint>,
+    
+    /// The NFT token account containing 1 NFT to be burned
+    #[account(mut)]
+    pub source_token_account: Account<'info, TokenAccount>,
+    
+    /// New fractional token mint to be created
+    #[account(mut)]
+    pub token_mint: Account<'info, Mint>,
+    
+    /// User's token account for fractional tokens
+    #[account(mut)]
+    pub token_account: Account<'info, TokenAccount>,
+    
+    pub owner: Signer<'info>,
+    
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+    pub system_program: Program<'info, System>,
+}
+
+#[account]
+pub struct Batch {
+    pub nft_mint: Pubkey,   // Link to the NFT
+    pub token_id: u64,
+    pub owner: Pubkey,
+    pub status: BatchStatus,
+    pub quantity: u64,
+    pub serial_number: String,
+    pub project_vintage_id: u64,
+    pub uri: String,
+}
+
+impl Batch {
+    pub const SIZE: usize = 32 + 8 + 32 + 1 + 8 + 200 + 8 + 200;
+}
+
+#[account]
+pub struct Registry {
+    pub authority: Pubkey,
+    pub batch_counter: u64,
+    pub bump: u8,
+}
+
+impl Registry {
+    pub const SIZE: usize = 32 + 8 + 1;
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq)]
+pub enum BatchStatus {
+    Pending,
+    Confirmed,
+    Fractionalized,
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("Invalid batch status for this operation")]
+    InvalidBatchStatus,
+    #[msg("Unauthorized: Only registry admin can perform this action")]
+    Unauthorized,
+    #[msg("Batch has been rejected and cannot be processed")]
+    BatchRejected,
+}
