@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Burn, SetAuthority};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Burn, SetAuthority, Transfer};
 use anchor_spl::metadata::{
     create_master_edition_v3, create_metadata_accounts_v3, 
     CreateMasterEditionV3, CreateMetadataAccountsV3, 
@@ -13,6 +13,125 @@ declare_id!("F1pN8uizaEUJhc6t5SGaoyVDz8Tf29t9Z37jQCdhe7Kd");
 #[program]
 pub mod carbon_credit_tokenizer {
     use super::*;
+
+    // --- POOL LOGIC ---
+    pub fn initialize_pool(
+        ctx: Context<InitializePool>, 
+        min_vintage: u64,
+        name: String,
+        symbol: String,
+        uri: String
+    ) -> Result<()> {
+        let pool = &mut ctx.accounts.pool;
+        pool.pool_mint = ctx.accounts.pool_mint.key();
+        pool.min_vintage = min_vintage;
+        pool.total_deposited = 0;
+        pool.bump = ctx.bumps.pool;
+    
+        // 1. Prepare PDA Signer seeds
+        let pool_bump = ctx.bumps.pool;
+        let seeds = &[b"pool".as_ref(), &[pool_bump]];
+        let signer = &[&seeds[..]];
+    
+        // 2. CPI to Metaplex to create token metadata
+        create_metadata_accounts_v3(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_metadata_program.to_account_info(),
+                CreateMetadataAccountsV3 {
+                    metadata: ctx.accounts.metadata.to_account_info(),
+                    mint: ctx.accounts.pool_mint.to_account_info(),
+                    mint_authority: pool.to_account_info(), // Pool PDA is the authority
+                    payer: ctx.accounts.authority.to_account_info(),
+                    update_authority: pool.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                    rent: ctx.accounts.rent.to_account_info(),
+                },
+                signer,
+            ),
+            DataV2 {
+                name,
+                symbol,
+                uri,
+                seller_fee_basis_points: 0,
+                creators: None,
+                collection: None,
+                uses: None,
+            },
+            false, // Is mutable
+            true,  // Update authority is signer
+            None,  // Collection
+        )?;
+    
+        Ok(())
+    }
+
+    /// Close the pool PDA so `initialize_pool` can run again. Registry authority only.
+    /// Revokes mint authority (no supply check—cleanup-friendly), then reclaims pool rent.
+    /// Pool vaults and circulating BCT may still exist on-chain; this only removes program pool state.
+    pub fn close_pool(ctx: Context<ClosePool>) -> Result<()> {
+        let pool = &ctx.accounts.pool;
+
+        let pool_bump = pool.bump;
+        let seeds = &[b"pool".as_ref(), &[pool_bump]];
+        let signer = &[&seeds[..]];
+
+        token::set_authority(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                SetAuthority {
+                    account_or_mint: ctx.accounts.pool_mint.to_account_info(),
+                    current_authority: pool.to_account_info(),
+                },
+                signer,
+            ),
+            AuthorityType::MintTokens,
+            None,
+        )?;
+        Ok(())
+    }
+
+    pub fn deposit_to_pool(ctx: Context<DepositToPool>, amount: u64) -> Result<()> {
+        let batch = &ctx.accounts.batch;
+        let pool = &mut ctx.accounts.pool;
+
+        // 1. Acceptance Criteria: Check Vintage and Status
+        require!(batch.status == BatchStatus::Fractionalized, ErrorCode::InvalidBatchStatus);
+        require!(batch.project_vintage_id >= pool.min_vintage, ErrorCode::VintageTooLow);
+
+        // 2. Transfer specific tokens from user to Pool Vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_batch_ata.to_account_info(),
+                    to: ctx.accounts.pool_vault.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        // 3. Mint generic Pool Tokens (BCT) to user
+        let pool_bump = pool.bump;
+        let pool_seeds = &[b"pool".as_ref(), &[pool_bump]];
+        let signer = &[&pool_seeds[..]];
+
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.pool_mint.to_account_info(),
+                    to: ctx.accounts.user_pool_ata.to_account_info(),
+                    authority: pool.to_account_info(),
+                },
+                signer,
+            ),
+            amount,
+        )?;
+
+        pool.total_deposited += amount;
+        Ok(())
+    }
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let registry = &mut ctx.accounts.registry;
@@ -313,6 +432,84 @@ pub struct FractionalizeBatch<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+#[derive(Accounts)]
+pub struct InitializePool<'info> {
+    #[account(init, payer = authority, space = 8 + CarbonPool::SIZE, seeds = [b"pool"], bump)]
+    pub pool: Account<'info, CarbonPool>,
+    
+    // The Mint for the BCT/NCT token
+    #[account(init, payer = authority, mint::decimals = 9, mint::authority = pool)]
+    pub pool_mint: Account<'info, Mint>,
+
+    /// CHECK: Metaplex Metadata account (PDA)
+    #[account(mut)]
+    pub metadata: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub token_metadata_program: Program<'info, Metadata>, // Added Metaplex Program
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct ClosePool<'info> {
+    #[account(
+        seeds = [b"registry"],
+        bump = registry.bump,
+        constraint = registry.authority == authority.key() @ ErrorCode::Unauthorized
+    )]
+    pub registry: Account<'info, Registry>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"pool"],
+        bump = pool.bump,
+        close = authority,
+        constraint = pool.pool_mint == pool_mint.key() @ ErrorCode::InvalidPoolMint
+    )]
+    pub pool: Account<'info, CarbonPool>,
+    #[account(mut)]
+    pub pool_mint: Account<'info, Mint>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct DepositToPool<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(mut, seeds = [b"pool"], bump = pool.bump)]
+    pub pool: Account<'info, CarbonPool>,
+    #[account(mut)]
+    pub pool_mint: Account<'info, Mint>,
+    #[account(mut, seeds = [b"batch", batch.nft_mint.as_ref()], bump)]
+    pub batch: Account<'info, Batch>,
+    #[account(mut)]
+    pub user_batch_ata: Account<'info, TokenAccount>, 
+    
+    // THE FIX: We pass the spl_mint account explicitly for the vault initialization
+    #[account(mut)]
+    pub spl_mint: Account<'info, Mint>,
+
+    #[account(
+        init_if_needed, 
+        payer = user, 
+        associated_token::mint = spl_mint, 
+        associated_token::authority = pool
+    )]
+    pub pool_vault: Account<'info, TokenAccount>, 
+
+    #[account(mut)]
+    pub user_pool_ata: Account<'info, TokenAccount>, 
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, anchor_spl::associated_token::AssociatedToken>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
 // --- Data Structs ---
 
 #[account]
@@ -330,7 +527,6 @@ pub struct Batch {
 impl Batch {
     pub const SIZE: usize = 32 + 8 + 32 + 1 + 8 + 200 + 8 + 200;
 }
-
 #[account]
 pub struct Registry {
     pub authority: Pubkey,
@@ -340,6 +536,18 @@ pub struct Registry {
 
 impl Registry {
     pub const SIZE: usize = 32 + 8 + 1;
+}
+
+#[account]
+pub struct CarbonPool {
+    pub pool_mint: Pubkey,
+    pub min_vintage: u64,
+    pub total_deposited: u64,
+    pub bump: u8,
+}
+
+impl CarbonPool {
+    pub const SIZE: usize = 32 + 8 + 8 + 1;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq)]
@@ -356,4 +564,8 @@ pub enum ErrorCode {
     InvalidBatchStatus,
     #[msg("Unauthorized access")]
     Unauthorized,
+    #[msg("The project vintage is too old for this pool")]
+    VintageTooLow,
+    #[msg("Pool mint does not match pool state")]
+    InvalidPoolMint,
 }

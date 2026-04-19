@@ -12,7 +12,8 @@ export default function UserPage() {
           <h1 className="page-title">Bring carbon credits on-chain</h1>
           <p className="page-intro small">
             Connect a wallet and progress through minting, enrichment, vintage linkage, and fractionalization after
-            verifier confirmation.
+            verifier confirmation. Deposits to the shared carbon pool (BCT) are available after the pool is initialized
+            from the verifier inbox.
           </p>
         </header>
         <UserOnchainPanel />

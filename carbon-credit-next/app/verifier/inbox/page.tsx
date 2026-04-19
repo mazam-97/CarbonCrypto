@@ -11,8 +11,8 @@ export default function VerifierInboxPage() {
           <p className="hero__eyebrow">Verifier</p>
           <h1 className="page-title">Inbox for pending batches</h1>
           <p className="page-intro small">
-            Validate serial numbers and metadata URIs on-chain before confirming. Refresh to pull the latest pending
-            set.
+            Validate serial numbers and metadata URIs on-chain before confirming. Initialize the carbon pool (token
+            metadata and minimum vintage) when needed. Refresh to pull the latest pending set.
           </p>
         </header>
         <VerifierInbox />

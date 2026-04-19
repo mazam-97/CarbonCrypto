@@ -14,8 +14,9 @@ import {
 import BN from 'bn.js';
 import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import toast from 'react-hot-toast';
+import { fetchCarbonPoolFlexible, isPoolAccountDecodeError } from './poolAccount';
 import { IDL, PROGRAM_ID } from './program';
-import type { BatchInfo, BatchStatus } from './types';
+import type { BatchInfo, BatchStatus, CarbonPoolInfo } from './types';
 
 const SYSVAR_RENT = new PublicKey('SysvarRent111111111111111111111111111111111');
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
@@ -57,11 +58,36 @@ function deriveSplMintKeypair(nftMint: PublicKey): Keypair {
   return Keypair.fromSeed(seed);
 }
 
+function poolPda(): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync([Buffer.from('pool')], PROGRAM_ID);
+  return pda;
+}
+
+function registryPda(): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync([Buffer.from('registry')], PROGRAM_ID);
+  return pda;
+}
+
 async function findBatchPdaByNft(connection: any, nftMint: PublicKey): Promise<PublicKey> {
   const [batchPda] = PublicKey.findProgramAddressSync([Buffer.from('batch'), nftMint.toBuffer()], PROGRAM_ID);
   const info = await connection.getAccountInfo(batchPda);
   if (!info) throw new Error('Batch not found for NFT mint');
   return batchPda;
+}
+
+function parseAmountToRaw(amountStr: string, decimals: number): BN {
+  const trimmed = amountStr.trim();
+  if (!trimmed || !/^\d*\.?\d+$/.test(trimmed)) {
+    throw new Error('Enter a valid amount (e.g. 1.5)');
+  }
+  const [wholePart, frac = ''] = trimmed.split('.');
+  const whole = wholePart || '0';
+  if (frac.length > decimals) {
+    throw new Error(`At most ${decimals} decimal places`);
+  }
+  const fracPadded = (frac + '0'.repeat(decimals)).slice(0, decimals);
+  const base = new BN(10).pow(new BN(decimals));
+  return new BN(whole).mul(base).add(new BN(fracPadded || '0'));
 }
 
 async function resolveNftTokenAccount(connection: any, nftMint: PublicKey, owner: PublicKey): Promise<PublicKey> {
@@ -121,7 +147,11 @@ export function useCarbonProgram() {
 
       toast.success(`Minted batch NFT: ${tx.slice(0, 8)}...`);
       return tx;
-    } finally {
+    } 
+    catch(e: any){
+        console.error(` something went wrong in minting nft {e}`);
+    }
+    finally {
       setLoading(false);
     }
   }, [program, publicKey]);
@@ -326,6 +356,162 @@ export function useCarbonProgram() {
     }
   }, [program, publicKey, connection]);
 
+  const fetchPoolInfo = useCallback(async (): Promise<CarbonPoolInfo | null> => {
+    if (!program) throw new Error('Program not initialized');
+    const pda = poolPda();
+    return fetchCarbonPoolFlexible(connection, program, pda, PROGRAM_ID);
+  }, [program, connection]);
+
+  const initializePool = useCallback(
+    async (minVintage: string, name: string, symbol: string, uri: string) => {
+      if (!program || !publicKey) throw new Error('Wallet not connected');
+      setLoading(true);
+      try {
+        const pda = poolPda();
+        if (await connection.getAccountInfo(pda)) {
+          throw new Error('Pool already exists for this program');
+        }
+        const poolMintKeypair = Keypair.generate();
+        const poolMint = poolMintKeypair.publicKey;
+        const metadata = metadataPda(poolMint);
+        const tx = await program.methods
+          .initializePool(new BN(minVintage), name, symbol, uri)
+          .accounts({
+            pool: pda,
+            poolMint,
+            metadata,
+            authority: publicKey,
+            systemProgram: SystemProgram.programId,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            tokenMetadataProgram: TOKEN_METADATA_PROGRAM_ID,
+            rent: SYSVAR_RENT,
+          })
+          .signers([poolMintKeypair])
+          .rpc();
+        toast.success(`Pool initialized: ${tx.slice(0, 8)}...`);
+        return tx;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [program, publicKey, connection]
+  );
+
+  const closePool = useCallback(async () => {
+    if (!program || !publicKey) throw new Error('Wallet not connected');
+    setLoading(true);
+    try {
+      const poolPk = poolPda();
+      const poolState = await fetchCarbonPoolFlexible(connection, program, poolPk, PROGRAM_ID);
+      if (!poolState) throw new Error('Pool account not found');
+      const tx = await program.methods
+        .closePool()
+        .accounts({
+          registry: registryPda(),
+          authority: publicKey,
+          pool: poolPk,
+          poolMint: poolState.poolMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+        })
+        .rpc();
+      toast.success(`Pool closed: ${tx.slice(0, 8)}...`);
+      return tx;
+    } catch (e) {
+      if (isPoolAccountDecodeError(e)) {
+        toast.error(
+          'Pool account does not match this build of the app. Run `anchor build` from the repo root so target/idl updates, then restart the dev server.'
+        );
+      }
+      throw e;
+    } finally {
+      setLoading(false);
+    }
+  }, [program, publicKey, connection]);
+
+  const fetchRegistryAuthority = useCallback(async (): Promise<PublicKey | null> => {
+    if (!program) throw new Error('Program not initialized');
+    const reg = registryPda();
+    const info = await connection.getAccountInfo(reg);
+    if (!info) return null;
+    const acc = await program.account.registry.fetch(reg) as any;
+    return acc.authority as PublicKey;
+  }, [program, connection]);
+
+  const depositToPool = useCallback(async (nftMint: string, amountStr: string) => {
+    if (!program || !publicKey) throw new Error('Wallet not connected');
+    setLoading(true);
+    try {
+      const nftMintPk = new PublicKey(nftMint.trim());
+      const batchPda = await findBatchPdaByNft(connection, nftMintPk);
+      const batchAcc = await program.account.batch.fetch(batchPda) as any;
+      const batchStatus = statusFromEnum(batchAcc.status);
+      if (batchStatus !== 'fractionalized') {
+        throw new Error('Batch must be fractionalized before depositing to the pool');
+      }
+
+      const poolPk = poolPda();
+      const poolState = await fetchCarbonPoolFlexible(connection, program, poolPk, PROGRAM_ID);
+      if (!poolState) throw new Error('Pool account not found');
+      const poolMintPk = poolState.poolMint;
+      const minVintage = poolState.minVintage as BN;
+      const vintage = batchAcc.projectVintageId as BN;
+      if (vintage.lt(minVintage)) {
+        throw new Error(
+          `Vintage ${vintage.toString()} is below the pool minimum (${minVintage.toString()}).`
+        );
+      }
+
+      const splMint = deriveSplMintKeypair(nftMintPk).publicKey;
+      const userBatchAta = await getAssociatedTokenAddress(splMint, publicKey);
+      const poolVault = await getAssociatedTokenAddress(splMint, poolPk, true);
+      const userPoolAta = await getAssociatedTokenAddress(poolMintPk, publicKey);
+
+      const amount = parseAmountToRaw(amountStr, 9);
+      if (amount.isZero()) throw new Error('Amount must be greater than zero');
+      const bal = await connection.getTokenAccountBalance(userBatchAta).catch(() => null);
+      if (bal && new BN(bal.value.amount).lt(amount)) {
+        throw new Error('Insufficient batch token balance in your wallet');
+      }
+
+      const preInstructions = [] as any[];
+      const userPoolInfo = await connection.getAccountInfo(userPoolAta);
+      if (!userPoolInfo) {
+        preInstructions.push(
+          createAssociatedTokenAccountInstruction(
+            publicKey,
+            userPoolAta,
+            publicKey,
+            poolMintPk
+          )
+        );
+      }
+
+      const tx = await program.methods
+        .depositToPool(amount)
+        .preInstructions(preInstructions)
+        .accounts({
+          user: publicKey,
+          pool: poolPk,
+          poolMint: poolMintPk,
+          batch: batchPda,
+          userBatchAta,
+          splMint,
+          poolVault,
+          userPoolAta,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+          rent: SYSVAR_RENT,
+        })
+        .rpc();
+
+      toast.success(`Deposited to pool: ${tx.slice(0, 8)}...`);
+      return tx;
+    } finally {
+      setLoading(false);
+    }
+  }, [program, publicKey, connection]);
+
   return {
     loading,
     wallet: publicKey,
@@ -336,5 +522,10 @@ export function useCarbonProgram() {
     fractionalizeBatch,
     getPendingBatches,
     queryBatchInfo,
+    fetchPoolInfo,
+    fetchRegistryAuthority,
+    initializePool,
+    closePool,
+    depositToPool,
   };
 }

@@ -13,3 +13,11 @@ export type BatchInfo = {
   projectVintageId: BN;
   status: BatchStatus;
 };
+
+export type CarbonPoolInfo = {
+  pda: PublicKey;
+  poolMint: PublicKey;
+  minVintage: BN;
+  totalDeposited: BN;
+  bump: number;
+};

@@ -1,17 +1,42 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useState } from 'react';
+import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
 import { useCarbonProgram } from '@/lib/useCarbonProgram';
+import { formatPoolTokens } from '@/lib/poolDisplay';
+import type { CarbonPoolInfo } from '@/lib/types';
 
 export function UserOnchainPanel() {
-  const { loading, mintBatchNft, updateBatchWithData, linkWithVintage, fractionalizeBatch, wallet } =
-    useCarbonProgram();
+  const {
+    loading,
+    mintBatchNft,
+    updateBatchWithData,
+    linkWithVintage,
+    fractionalizeBatch,
+    wallet,
+    fetchPoolInfo,
+    depositToPool,
+  } = useCarbonProgram();
 
   const [mint, setMint] = useState({ name: '', symbol: '', uri: '' });
   const [mintSymbolError, setMintSymbolError] = useState<string | null>(null);
   const [update, setUpdate] = useState({ nftMint: '', serialNumber: '', quantity: '', uri: '' });
   const [vintage, setVintage] = useState({ nftMint: '', vintageId: '' });
   const [fractionalize, setFractionalize] = useState({ nftMint: '', tokenName: '', tokenSymbol: '' });
+  const [poolInfo, setPoolInfo] = useState<CarbonPoolInfo | null | undefined>(undefined);
+  const [poolDeposit, setPoolDeposit] = useState({ nftMint: '', amount: '' });
+
+  const refreshPool = useCallback(async () => {
+    try {
+      const p = await fetchPoolInfo();
+      setPoolInfo(p);
+    } catch {
+      setPoolInfo(null);
+    }
+  }, [fetchPoolInfo]);
+
+  useEffect(() => {
+    void refreshPool();
+  }, [refreshPool, wallet]);
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -53,13 +78,22 @@ export function UserOnchainPanel() {
 
   const onFractionalize = (e: FormEvent) => {
     e.preventDefault();
-    run(() =>
-      fractionalizeBatch(
+    run(async () => {
+      await fractionalizeBatch(
         fractionalize.nftMint.trim(),
         fractionalize.tokenName.trim(),
         fractionalize.tokenSymbol.trim()
-      )
-    );
+      );
+      await refreshPool();
+    });
+  };
+
+  const onDepositPool = (e: FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      await depositToPool(poolDeposit.nftMint.trim(), poolDeposit.amount.trim());
+      await refreshPool();
+    });
   };
 
   return (
@@ -193,6 +227,65 @@ export function UserOnchainPanel() {
           Fractionalize batch
         </button>
       </form>
+
+      <div className="card stack">
+        <div className="section-label">Pool</div>
+        <h3>Carbon pool (BCT)</h3>
+        <p className="small">
+          Deposit fractional batch tokens into the pool vault and receive pool tokens 1:1. Requires a fractionalized
+          batch whose vintage meets the pool minimum. Pool creation is done from the verifier console (registry
+          authority).
+        </p>
+
+        {poolInfo === undefined ? (
+          <p className="small" style={{ color: 'var(--text-muted)' }}>
+            Loading pool status…
+          </p>
+        ) : poolInfo === null ? (
+          <p className="small">
+            The carbon pool is not active yet. The registry authority initializes it from the{' '}
+            <a href="/verifier/inbox">verifier inbox</a>.
+          </p>
+        ) : (
+          <>
+            <dl className="pool-stats grid grid-2 stack" style={{ gap: '0.5rem 1rem', margin: 0 }}>
+              <dt className="small" style={{ margin: 0, color: 'var(--text-muted)' }}>
+                Min vintage
+              </dt>
+              <dd style={{ margin: 0 }}>{poolInfo.minVintage.toString()}</dd>
+              <dt className="small" style={{ margin: 0, color: 'var(--text-muted)' }}>
+                Total deposited
+              </dt>
+              <dd style={{ margin: 0 }}>{formatPoolTokens(poolInfo.totalDeposited)} pool tokens</dd>
+              <dt className="small" style={{ margin: 0, color: 'var(--text-muted)' }}>
+                Pool mint
+              </dt>
+              <dd className="inbox-card__id" style={{ margin: 0, fontSize: '0.75rem' }}>
+                {poolInfo.poolMint.toBase58()}
+              </dd>
+            </dl>
+            <form className="stack" onSubmit={onDepositPool}>
+              <input
+                placeholder="Batch NFT mint (same as fractionalized batch)"
+                value={poolDeposit.nftMint}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setPoolDeposit({ ...poolDeposit, nftMint: e.target.value })
+                }
+              />
+              <input
+                placeholder="Amount (batch tokens, 9 decimals)"
+                value={poolDeposit.amount}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setPoolDeposit({ ...poolDeposit, amount: e.target.value })
+                }
+              />
+              <button type="submit" disabled={loading}>
+                Deposit to pool
+              </button>
+            </form>
+          </>
+        )}
+      </div>
     </div>
   );
 }
