@@ -94,11 +94,9 @@ pub mod carbon_credit_tokenizer {
         let batch = &ctx.accounts.batch;
         let pool = &mut ctx.accounts.pool;
 
-        // 1. Acceptance Criteria: Check Vintage and Status
         require!(batch.status == BatchStatus::Fractionalized, ErrorCode::InvalidBatchStatus);
         require!(batch.project_vintage_id >= pool.min_vintage, ErrorCode::VintageTooLow);
 
-        // 2. Transfer specific tokens from user to Pool Vault
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -111,7 +109,6 @@ pub mod carbon_credit_tokenizer {
             amount,
         )?;
 
-        // 3. Mint generic Pool Tokens (BCT) to user
         let pool_bump = pool.bump;
         let pool_seeds = &[b"pool".as_ref(), &[pool_bump]];
         let signer = &[&pool_seeds[..]];
@@ -130,6 +127,37 @@ pub mod carbon_credit_tokenizer {
         )?;
 
         pool.total_deposited += amount;
+        Ok(())
+    }
+
+    /// Permanently retire pool tokens (BCT): burn from the holder's ATA and increment global retirement stats.
+    /// Optional `note` is logged for indexers (max 200 chars).
+    pub fn retire_pool_tokens(ctx: Context<RetirePoolTokens>, amount: u64, note: String) -> Result<()> {
+        require!(amount > 0, ErrorCode::InvalidRetirementAmount);
+        require!(note.len() <= 200, ErrorCode::NoteTooLong);
+
+        let pool = &ctx.accounts.pool;
+        require!(pool.pool_mint == ctx.accounts.pool_mint.key(), ErrorCode::InvalidPoolMint);
+
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.pool_mint.to_account_info(),
+                    from: ctx.accounts.user_pool_ata.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
+
+        let stats = &mut ctx.accounts.retirement_stats;
+        stats.total_retired = stats
+            .total_retired
+            .checked_add(amount)
+            .ok_or(ErrorCode::Overflow)?;
+
+        msg!("retire_pool_tokens: amount={}, total_retired={}, note_len={}", amount, stats.total_retired, note.len());
         Ok(())
     }
 
@@ -488,29 +516,57 @@ pub struct DepositToPool<'info> {
     #[account(mut, seeds = [b"batch", batch.nft_mint.as_ref()], bump)]
     pub batch: Account<'info, Batch>,
     #[account(mut)]
-    pub user_batch_ata: Account<'info, TokenAccount>, 
-    
-    // THE FIX: We pass the spl_mint account explicitly for the vault initialization
+    pub user_batch_ata: Account<'info, TokenAccount>,
     #[account(mut)]
     pub spl_mint: Account<'info, Mint>,
-
     #[account(
-        init_if_needed, 
-        payer = user, 
-        associated_token::mint = spl_mint, 
-        associated_token::authority = pool
+        init_if_needed,
+        payer = user,
+        associated_token::mint = spl_mint,
+        associated_token::authority = pool,
     )]
-    pub pool_vault: Account<'info, TokenAccount>, 
-
+    pub pool_vault: Account<'info, TokenAccount>,
     #[account(mut)]
-    pub user_pool_ata: Account<'info, TokenAccount>, 
+    pub user_pool_ata: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, anchor_spl::associated_token::AssociatedToken>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
 }
 
+#[derive(Accounts)]
+pub struct RetirePoolTokens<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(mut, seeds = [b"pool"], bump = pool.bump)]
+    pub pool: Account<'info, CarbonPool>,
+    #[account(mut)]
+    pub pool_mint: Account<'info, Mint>,
+    #[account(mut)]
+    pub user_pool_ata: Account<'info, TokenAccount>,
+    #[account(
+        init_if_needed,
+        payer = user,
+        space = 8 + RetirementStats::SIZE,
+        seeds = [b"retirement"],
+        bump
+    )]
+    pub retirement_stats: Account<'info, RetirementStats>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
 // --- Data Structs ---
+
+#[account]
+pub struct RetirementStats {
+    pub total_retired: u64,
+}
+
+impl RetirementStats {
+    pub const SIZE: usize = 8;
+}
 
 #[account]
 pub struct Batch {
@@ -568,4 +624,10 @@ pub enum ErrorCode {
     VintageTooLow,
     #[msg("Pool mint does not match pool state")]
     InvalidPoolMint,
+    #[msg("Retirement amount must be greater than zero")]
+    InvalidRetirementAmount,
+    #[msg("Note exceeds maximum length")]
+    NoteTooLong,
+    #[msg("Arithmetic overflow")]
+    Overflow,
 }

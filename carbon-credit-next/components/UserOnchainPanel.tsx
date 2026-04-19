@@ -3,7 +3,7 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
 import { useCarbonProgram } from '@/lib/useCarbonProgram';
 import { formatPoolTokens } from '@/lib/poolDisplay';
-import type { CarbonPoolInfo } from '@/lib/types';
+import type { CarbonPoolInfo, RetirementStatsInfo } from '@/lib/types';
 
 export function UserOnchainPanel() {
   const {
@@ -14,7 +14,9 @@ export function UserOnchainPanel() {
     fractionalizeBatch,
     wallet,
     fetchPoolInfo,
+    fetchRetirementStats,
     depositToPool,
+    retirePoolTokens,
   } = useCarbonProgram();
 
   const [mint, setMint] = useState({ name: '', symbol: '', uri: '' });
@@ -23,16 +25,20 @@ export function UserOnchainPanel() {
   const [vintage, setVintage] = useState({ nftMint: '', vintageId: '' });
   const [fractionalize, setFractionalize] = useState({ nftMint: '', tokenName: '', tokenSymbol: '' });
   const [poolInfo, setPoolInfo] = useState<CarbonPoolInfo | null | undefined>(undefined);
+  const [retirementStats, setRetirementStats] = useState<RetirementStatsInfo | null | undefined>(undefined);
   const [poolDeposit, setPoolDeposit] = useState({ nftMint: '', amount: '' });
+  const [retire, setRetire] = useState({ amount: '', note: '' });
 
   const refreshPool = useCallback(async () => {
     try {
-      const p = await fetchPoolInfo();
+      const [p, r] = await Promise.all([fetchPoolInfo(), fetchRetirementStats()]);
       setPoolInfo(p);
+      setRetirementStats(r);
     } catch {
       setPoolInfo(null);
+      setRetirementStats(null);
     }
-  }, [fetchPoolInfo]);
+  }, [fetchPoolInfo, fetchRetirementStats]);
 
   useEffect(() => {
     void refreshPool();
@@ -93,6 +99,15 @@ export function UserOnchainPanel() {
     run(async () => {
       await depositToPool(poolDeposit.nftMint.trim(), poolDeposit.amount.trim());
       await refreshPool();
+    });
+  };
+
+  const onRetirePool = (e: FormEvent) => {
+    e.preventDefault();
+    run(async () => {
+      await retirePoolTokens(retire.amount.trim(), retire.note);
+      await refreshPool();
+      setRetire({ amount: '', note: '' });
     });
   };
 
@@ -237,7 +252,7 @@ export function UserOnchainPanel() {
           authority).
         </p>
 
-        {poolInfo === undefined ? (
+        {poolInfo === undefined || retirementStats === undefined ? (
           <p className="small" style={{ color: 'var(--text-muted)' }}>
             Loading pool status…
           </p>
@@ -257,6 +272,14 @@ export function UserOnchainPanel() {
                 Total deposited
               </dt>
               <dd style={{ margin: 0 }}>{formatPoolTokens(poolInfo.totalDeposited)} pool tokens</dd>
+              <dt className="small" style={{ margin: 0, color: 'var(--text-muted)' }}>
+                Total retired (global)
+              </dt>
+              <dd style={{ margin: 0 }}>
+                {retirementStats
+                  ? `${formatPoolTokens(retirementStats.totalRetired)} BCT`
+                  : '0 BCT'}
+              </dd>
               <dt className="small" style={{ margin: 0, color: 'var(--text-muted)' }}>
                 Pool mint
               </dt>
@@ -281,6 +304,36 @@ export function UserOnchainPanel() {
               />
               <button type="submit" disabled={loading}>
                 Deposit to pool
+              </button>
+            </form>
+
+            <form className="stack" onSubmit={onRetirePool} style={{ marginTop: '1.25rem' }}>
+              <div className="section-label">Retire</div>
+              <h4 className="small" style={{ margin: '0 0 0.25rem' }}>
+                Retire pool tokens (BCT)
+              </h4>
+              <p className="small">
+                Permanently burn BCT from your wallet and add to the program-wide retired total. Optional note is
+                logged on-chain for reporting (max 200 characters).
+              </p>
+              <input
+                placeholder="Amount to retire (BCT, 9 decimals)"
+                value={retire.amount}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setRetire({ ...retire, amount: e.target.value })
+                }
+              />
+              <input
+                placeholder="Note (optional, e.g. purpose or claim ID)"
+                value={retire.note}
+                maxLength={200}
+                onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                  setRetire({ ...retire, note: e.target.value })
+                }
+              />
+              <p className="form-hint">Note: {retire.note.length}/200</p>
+              <button type="submit" disabled={loading}>
+                Retire BCT
               </button>
             </form>
           </>

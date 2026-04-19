@@ -13,7 +13,7 @@ export default function UserPage() {
           <p className="page-intro small">
             Connect a wallet and progress through minting, enrichment, vintage linkage, and fractionalization after
             verifier confirmation. Deposits to the shared carbon pool (BCT) are available after the pool is initialized
-            from the verifier inbox.
+            from the verifier inbox. You can retire (burn) BCT when credits are claimed or used.
           </p>
         </header>
         <UserOnchainPanel />

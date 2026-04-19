@@ -21,3 +21,8 @@ export type CarbonPoolInfo = {
   totalDeposited: BN;
   bump: number;
 };
+
+export type RetirementStatsInfo = {
+  pda: PublicKey;
+  totalRetired: BN;
+};

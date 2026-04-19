@@ -16,7 +16,7 @@ import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import toast from 'react-hot-toast';
 import { fetchCarbonPoolFlexible, isPoolAccountDecodeError } from './poolAccount';
 import { IDL, PROGRAM_ID } from './program';
-import type { BatchInfo, BatchStatus, CarbonPoolInfo } from './types';
+import type { BatchInfo, BatchStatus, CarbonPoolInfo, RetirementStatsInfo } from './types';
 
 const SYSVAR_RENT = new PublicKey('SysvarRent111111111111111111111111111111111');
 const TOKEN_METADATA_PROGRAM_ID = new PublicKey('metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s');
@@ -65,6 +65,11 @@ function poolPda(): PublicKey {
 
 function registryPda(): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync([Buffer.from('registry')], PROGRAM_ID);
+  return pda;
+}
+
+function retirementStatsPda(): PublicKey {
+  const [pda] = PublicKey.findProgramAddressSync([Buffer.from('retirement')], PROGRAM_ID);
   return pda;
 }
 
@@ -512,6 +517,56 @@ export function useCarbonProgram() {
     }
   }, [program, publicKey, connection]);
 
+  const fetchRetirementStats = useCallback(async (): Promise<RetirementStatsInfo | null> => {
+    if (!program) throw new Error('Program not initialized');
+    const pda = retirementStatsPda();
+    const info = await connection.getAccountInfo(pda);
+    if (!info) return null;
+    const acc = await (program.account as any).retirementStats.fetch(pda) as any;
+    return {
+      pda,
+      totalRetired: acc.totalRetired as BN,
+    };
+  }, [program, connection]);
+
+  const retirePoolTokens = useCallback(
+    async (amountStr: string, note: string) => {
+      if (!program || !publicKey) throw new Error('Wallet not connected');
+      const noteTrim = note.trim();
+      if (noteTrim.length > 200) throw new Error('Note must be 200 characters or fewer');
+      setLoading(true);
+      try {
+        const poolPk = poolPda();
+        const poolState = await fetchCarbonPoolFlexible(connection, program, poolPk, PROGRAM_ID);
+        if (!poolState) throw new Error('Pool is not initialized');
+
+        const poolMintPk = poolState.poolMint;
+        const userPoolAta = await getAssociatedTokenAddress(poolMintPk, publicKey);
+        const amount = parseAmountToRaw(amountStr, 9);
+        if (amount.isZero()) throw new Error('Amount must be greater than zero');
+
+        const tx = await program.methods
+          .retirePoolTokens(amount, noteTrim)
+          .accounts({
+            user: publicKey,
+            pool: poolPk,
+            poolMint: poolMintPk,
+            userPoolAta,
+            retirementStats: retirementStatsPda(),
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+            rent: SYSVAR_RENT,
+          })
+          .rpc();
+        toast.success(`Retired pool tokens: ${tx.slice(0, 8)}...`);
+        return tx;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [program, publicKey, connection]
+  );
+
   return {
     loading,
     wallet: publicKey,
@@ -523,9 +578,11 @@ export function useCarbonProgram() {
     getPendingBatches,
     queryBatchInfo,
     fetchPoolInfo,
+    fetchRetirementStats,
     fetchRegistryAuthority,
     initializePool,
     closePool,
     depositToPool,
+    retirePoolTokens,
   };
 }
