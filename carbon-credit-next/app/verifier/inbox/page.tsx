@@ -1,13 +1,23 @@
 import { WalletBar } from '@/components/WalletBar';
 import { VerifierInbox } from '@/components/VerifierInbox';
+import { SiteFooter } from '@/components/SiteFooter';
 
 export default function VerifierInboxPage() {
   return (
-    <main className="container grid" style={{ gap: 16 }}>
-      <h1>Auditor / Verifier Inbox</h1>
-      <p className="small">Review pending batches and confirm after validating serial + metadata URI.</p>
+    <>
       <WalletBar />
-      <VerifierInbox />
-    </main>
+      <main className="page-main container grid">
+        <header>
+          <p className="hero__eyebrow">Verifier</p>
+          <h1 className="page-title">Inbox for pending batches</h1>
+          <p className="page-intro small">
+            Validate serial numbers and metadata URIs on-chain before confirming. Refresh to pull the latest pending
+            set.
+          </p>
+        </header>
+        <VerifierInbox />
+      </main>
+      <SiteFooter />
+    </>
   );
 }

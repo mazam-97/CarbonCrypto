@@ -17,30 +17,62 @@ export function VerifierInbox() {
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+  }, []);
 
   return (
-    <div className="grid" style={{ gap: 16 }}>
-      <div className="row" style={{ justifyContent: 'space-between' }}>
-        <p className="small">Verifier wallet: {wallet?.toBase58() ?? 'Not connected'}</p>
-        <button onClick={refresh} disabled={loading}>Refresh Inbox</button>
+    <div className="grid stack--lg">
+      <div className="card card--wallet">
+        <div className="stack stack-tight">
+          <span className="small" style={{ margin: 0 }}>
+            Verifier wallet
+          </span>
+          <span className="inbox-card__id">{wallet ? wallet.toBase58() : 'Not connected'}</span>
+        </div>
+        <button type="button" className="btn btn--secondary" onClick={refresh} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Refresh inbox'}
+        </button>
       </div>
 
-      {items.length === 0 && <div className="card">No pending batches.</div>}
+      {items.length === 0 && (
+        <div className="card empty-state">No pending batches. Issuers will appear here after minting.</div>
+      )}
 
       {items.map((b: BatchInfo) => (
-        <div className="card grid" key={b.pda.toBase58()}>
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <strong>Batch {b.nftMint.toBase58().slice(0, 8)}...</strong>
-            <span className="small">Qty: {b.quantity.toString()}</span>
+        <div className="card stack" key={b.pda.toBase58()}>
+          <div className="inbox-card__top">
+            <div>
+              <div className="section-label">Batch</div>
+              <div className="inbox-card__id">{b.nftMint.toBase58()}</div>
+            </div>
+            <span className="badge">Qty {b.quantity.toString()}</span>
           </div>
-          <div className="small">Serial: {b.serialNumber || '-'}</div>
-          <div className="small">Owner: {b.owner.toBase58()}</div>
-          <div className="small">
-            Metadata: {b.uri ? <a href={b.uri} target="_blank">{b.uri}</a> : '-'}
-          </div>
+          <dl className="dl-grid dl-grid--flush">
+            <div className="dl-row">
+              <dt>Serial</dt>
+              <dd>{b.serialNumber || '—'}</dd>
+            </div>
+            <div className="dl-row">
+              <dt>Owner</dt>
+              <dd>{b.owner.toBase58()}</dd>
+            </div>
+            <div className="dl-row">
+              <dt>Metadata</dt>
+              <dd>
+                {b.uri ? (
+                  <a href={b.uri} target="_blank" rel="noreferrer">
+                    {b.uri}
+                  </a>
+                ) : (
+                  '—'
+                )}
+              </dd>
+            </div>
+          </dl>
           <div className="row">
             <button
+              type="button"
               disabled={loading}
               onClick={async () => {
                 try {
@@ -51,7 +83,7 @@ export function VerifierInbox() {
                 }
               }}
             >
-              Confirm
+              Confirm batch
             </button>
           </div>
         </div>
