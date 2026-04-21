@@ -1,0 +1,35 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Indexed `retire_pool_tokens` instructions (Helius enhanced webhook).
+model RetirementEvent {
+  id             String   @id @default(cuid())
+  signature      String
+  ixIndex        Int
+  walletAddress  String
+  amount         BigInt
+  note           String
+  createdAt      DateTime @default(now())
+
+  @@unique([signature, ixIndex])
+  @@index([walletAddress])
+}
+
+/// Indexed `mint_batch_nft` instructions.
+model BatchMintEvent {
+  id        String   @id @default(cuid())
+  signature String
+  ixIndex   Int
+  name      String
+  symbol    String
+  uri       String
+  createdAt DateTime @default(now())
+
+  @@unique([signature, ixIndex])
+}
