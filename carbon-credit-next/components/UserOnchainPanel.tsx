@@ -3,7 +3,8 @@
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
 import { useCarbonProgram } from '@/lib/useCarbonProgram';
 import { formatPoolTokens } from '@/lib/poolDisplay';
-import type { CarbonPoolInfo, RetirementStatsInfo } from '@/lib/types';
+import { fetchIndexedBatches, fetchIndexedWalletHoldings } from '@/lib/indexer';
+import type { CarbonPoolInfo, IndexedBatchMint, IndexedWalletHoldings, RetirementStatsInfo } from '@/lib/types';
 
 export function UserOnchainPanel() {
   const {
@@ -28,6 +29,30 @@ export function UserOnchainPanel() {
   const [retirementStats, setRetirementStats] = useState<RetirementStatsInfo | null | undefined>(undefined);
   const [poolDeposit, setPoolDeposit] = useState({ nftMint: '', amount: '' });
   const [retire, setRetire] = useState({ amount: '', note: '' });
+  const [indexedBatches, setIndexedBatches] = useState<IndexedBatchMint[]>([]);
+  const [walletHoldings, setWalletHoldings] = useState<IndexedWalletHoldings | null>(null);
+  const [indexerError, setIndexerError] = useState<string | null>(null);
+
+  const refreshIndexed = useCallback(async () => {
+    const walletAddress = wallet?.toBase58();
+    if (!walletAddress) {
+      setIndexedBatches([]);
+      setWalletHoldings(null);
+      setIndexerError(null);
+      return;
+    }
+
+    try {
+      const rows = await fetchIndexedBatches(walletAddress, 50);
+      setIndexedBatches(rows);
+      const holdings = await fetchIndexedWalletHoldings(walletAddress);
+      setWalletHoldings(holdings);
+      setIndexerError(null);
+    } catch (e) {
+      console.error(e);
+      setIndexerError('Indexer is unreachable. Check carbon-backend and NEXT_PUBLIC_INDEXER_API_URL.');
+    }
+  }, [wallet]);
 
   const refreshPool = useCallback(async () => {
     try {
@@ -43,6 +68,10 @@ export function UserOnchainPanel() {
   useEffect(() => {
     void refreshPool();
   }, [refreshPool, wallet]);
+
+  useEffect(() => {
+    void refreshIndexed();
+  }, [refreshIndexed]);
 
   const run = async (fn: () => Promise<unknown>) => {
     try {
@@ -62,7 +91,10 @@ export function UserOnchainPanel() {
       return;
     }
     setMintSymbolError(null);
-    run(() => mintBatchNft(mint.name.trim(), symbol, mint.uri.trim()));
+    run(async () => {
+      await mintBatchNft(mint.name.trim(), symbol, mint.uri.trim());
+      await refreshIndexed();
+    });
   };
 
   const onUpdate = (e: FormEvent) => {
@@ -189,6 +221,102 @@ export function UserOnchainPanel() {
             Update
           </button>
         </form>
+      </div>
+
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div className="section-label">Indexer</div>
+            <h3 style={{ margin: '0.25rem 0 0' }}>Indexed batch mints</h3>
+          </div>
+          <button type="button" className="btn btn--secondary" disabled={loading} onClick={() => void refreshIndexed()}>
+            Refresh indexed
+          </button>
+        </div>
+        <p className="small">
+          Batch mint events below come from your backend indexer webhook (not direct chain account scans).
+        </p>
+        {indexerError ? (
+          <p className="form-error" role="alert">
+            {indexerError}
+          </p>
+        ) : !wallet ? (
+          <p className="small" style={{ color: 'var(--text-muted)' }}>
+            Connect your wallet to view your indexed batch mints.
+          </p>
+        ) : indexedBatches.length === 0 ? (
+          <p className="small" style={{ color: 'var(--text-muted)' }}>
+            No indexed mint events yet.
+          </p>
+        ) : (
+          <div className="stack">
+            {walletHoldings && (
+              <div className="card stack">
+                <div className="section-label">Connected wallet holdings (indexed)</div>
+                <dl className="dl-grid dl-grid--flush">
+                  <div className="dl-row">
+                    <dt>Minted batch events</dt>
+                    <dd>{walletHoldings.summary.mintedCount}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Unique NFT mints indexed</dt>
+                    <dd>{walletHoldings.summary.uniqueMintCount}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Retirement events</dt>
+                    <dd>{walletHoldings.summary.retirementsCount}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Total retired (raw)</dt>
+                    <dd>{walletHoldings.summary.totalRetiredRaw}</dd>
+                  </div>
+                </dl>
+                {walletHoldings.latestRetirements.length > 0 && (
+                  <div className="small">
+                    Latest retirement note: {walletHoldings.latestRetirements[0]?.note || '—'}
+                  </div>
+                )}
+              </div>
+            )}
+            {indexedBatches.map((item) => (
+              <div className="card stack" key={`${item.signature}-${item.ixIndex}`}>
+                <div className="inbox-card__top">
+                  <div>
+                    <div className="section-label">Mint event</div>
+                    <div className="inbox-card__id">{item.signature}</div>
+                  </div>
+                  <span className="badge">{new Date(item.createdAt).toLocaleString()}</span>
+                </div>
+                <dl className="dl-grid dl-grid--flush">
+                  <div className="dl-row">
+                    <dt>Name</dt>
+                    <dd>{item.name || '—'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Symbol</dt>
+                    <dd>{item.symbol || '—'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>NFT mint</dt>
+                    <dd className="inbox-card__id">{item.nftMint || 'Not decoded by webhook payload'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Metadata URI</dt>
+                    <dd>
+                      {item.uri ? (
+                        <a href={item.uri} target="_blank" rel="noreferrer">
+                          {item.uri}
+                        </a>
+                      ) : (
+                        '—'
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <form className="card stack" onSubmit={onLink}>

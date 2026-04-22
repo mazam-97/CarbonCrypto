@@ -1,7 +1,8 @@
 'use client';
 
 import { ChangeEvent, FormEvent, useCallback, useEffect, useState } from 'react';
-import type { BatchInfo, CarbonPoolInfo } from '@/lib/types';
+import { fetchIndexedBatches } from '@/lib/indexer';
+import type { BatchInfo, CarbonPoolInfo, IndexedBatchMint } from '@/lib/types';
 import { formatPoolTokens } from '@/lib/poolDisplay';
 import { useCarbonProgram } from '@/lib/useCarbonProgram';
 
@@ -15,6 +16,8 @@ export function VerifierInbox() {
     initializePool,
   } = useCarbonProgram();
   const [items, setItems] = useState<BatchInfo[]>([]);
+  const [indexedBatches, setIndexedBatches] = useState<IndexedBatchMint[]>([]);
+  const [indexerError, setIndexerError] = useState<string | null>(null);
   const [poolInfo, setPoolInfo] = useState<CarbonPoolInfo | null | undefined>(undefined);
   const [poolInit, setPoolInit] = useState({ minVintage: '', name: '', symbol: '', uri: '' });
   const [poolSymbolError, setPoolSymbolError] = useState<string | null>(null);
@@ -37,6 +40,17 @@ export function VerifierInbox() {
     }
   }, [fetchPoolInfo]);
 
+  const refreshIndexed = useCallback(async () => {
+    try {
+      const rows = await fetchIndexedBatches(undefined, 50);
+      setIndexedBatches(rows);
+      setIndexerError(null);
+    } catch (e) {
+      console.error(e);
+      setIndexerError('Indexer is unreachable. Check carbon-backend and NEXT_PUBLIC_INDEXER_API_URL.');
+    }
+  }, []);
+
   useEffect(() => {
     void refreshInbox();
   }, []);
@@ -44,6 +58,10 @@ export function VerifierInbox() {
   useEffect(() => {
     void refreshPoolState();
   }, [refreshPoolState, wallet]);
+
+  useEffect(() => {
+    void refreshIndexed();
+  }, [refreshIndexed]);
 
   const onInitPool = (e: FormEvent) => {
     e.preventDefault();
@@ -84,6 +102,7 @@ export function VerifierInbox() {
           onClick={() => {
             void refreshInbox();
             void refreshPoolState();
+            void refreshIndexed();
           }}
           disabled={loading}
         >
@@ -209,6 +228,79 @@ export function VerifierInbox() {
             )}
             */}
           </>
+        )}
+      </div>
+
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <div className="section-label">Indexer</div>
+            <h3 style={{ margin: '0.25rem 0 0' }}>Indexed batch mints</h3>
+          </div>
+          <button
+            type="button"
+            className="btn btn--secondary"
+            disabled={loading}
+            onClick={() => void refreshIndexed()}
+          >
+            Refresh indexed
+          </button>
+        </div>
+        <p className="small">
+          This feed comes from the backend webhook indexer and helps triage newly minted batches before on-chain review.
+        </p>
+        {indexerError ? (
+          <p className="form-error" role="alert">
+            {indexerError}
+          </p>
+        ) : indexedBatches.length === 0 ? (
+          <p className="small" style={{ color: 'var(--text-muted)' }}>
+            No indexed mint events yet.
+          </p>
+        ) : (
+          <div className="stack">
+            {indexedBatches.map((item) => (
+              <div className="card stack" key={`${item.signature}-${item.ixIndex}`}>
+                <div className="inbox-card__top">
+                  <div>
+                    <div className="section-label">Mint event</div>
+                    <div className="inbox-card__id">{item.signature}</div>
+                  </div>
+                  <span className="badge">{new Date(item.createdAt).toLocaleString()}</span>
+                </div>
+                <dl className="dl-grid dl-grid--flush">
+                  <div className="dl-row">
+                    <dt>Name</dt>
+                    <dd>{item.name || '—'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Symbol</dt>
+                    <dd>{item.symbol || '—'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Wallet</dt>
+                    <dd className="inbox-card__id">{item.walletAddress || '—'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>NFT mint</dt>
+                    <dd className="inbox-card__id">{item.nftMint || 'Not decoded by webhook payload'}</dd>
+                  </div>
+                  <div className="dl-row">
+                    <dt>Metadata</dt>
+                    <dd>
+                      {item.uri ? (
+                        <a href={item.uri} target="_blank" rel="noreferrer">
+                          {item.uri}
+                        </a>
+                      ) : (
+                        '—'
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

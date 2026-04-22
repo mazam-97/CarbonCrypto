@@ -157,6 +157,13 @@ pub mod carbon_credit_tokenizer {
             .checked_add(amount)
             .ok_or(ErrorCode::Overflow)?;
 
+        emit!(PoolTokensRetiredEvent {
+            user: ctx.accounts.user.key(),
+            amount,
+            total_retired: stats.total_retired,
+            note: note.clone(),
+        });
+
         msg!("retire_pool_tokens: amount={}, total_retired={}, note_len={}", amount, stats.total_retired, note.len());
         Ok(())
     }
@@ -245,6 +252,15 @@ pub mod carbon_credit_tokenizer {
         batch.status = BatchStatus::Pending;
         batch.uri = uri;
         batch.token_id = token_id;
+
+        emit!(BatchMintedEvent {
+            owner: batch.owner,
+            nft_mint: batch.nft_mint,
+            token_id,
+            name,
+            symbol,
+            uri: batch.uri.clone(),
+        });
 
         Ok(())
     }
@@ -566,6 +582,24 @@ pub struct RetirementStats {
 
 impl RetirementStats {
     pub const SIZE: usize = 8;
+}
+
+#[event]
+pub struct BatchMintedEvent {
+    pub owner: Pubkey,
+    pub nft_mint: Pubkey,
+    pub token_id: u64,
+    pub name: String,
+    pub symbol: String,
+    pub uri: String,
+}
+
+#[event]
+pub struct PoolTokensRetiredEvent {
+    pub user: Pubkey,
+    pub amount: u64,
+    pub total_retired: u64,
+    pub note: String,
 }
 
 #[account]

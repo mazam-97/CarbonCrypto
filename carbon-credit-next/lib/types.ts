@@ -26,3 +26,41 @@ export type RetirementStatsInfo = {
   pda: PublicKey;
   totalRetired: BN;
 };
+
+export type IndexedBatchMint = {
+  signature: string;
+  ixIndex: number;
+  walletAddress: string | null;
+  name: string;
+  symbol: string;
+  uri: string;
+  nftMint: string | null;
+  slot: string | null;
+  createdAt: string;
+};
+
+export type IndexedWalletHoldings = {
+  wallet: string;
+  summary: {
+    mintedCount: number;
+    uniqueMintCount: number;
+    retirementsCount: number;
+    totalRetiredRaw: string;
+  };
+  latestMints: Array<{
+    signature: string;
+    ixIndex: number;
+    nftMint: string | null;
+    name: string;
+    symbol: string;
+    uri: string;
+    createdAt: string;
+  }>;
+  latestRetirements: Array<{
+    signature: string;
+    ixIndex: number;
+    amountRaw: string;
+    note: string;
+    createdAt: string;
+  }>;
+};

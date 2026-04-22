@@ -36,6 +36,15 @@ type IndexedBatchRow = {
   createdAt: Date;
 };
 
+type IndexedRetirementRow = {
+  signature: string;
+  ixIndex: number;
+  walletAddress: string;
+  amount: bigint;
+  note: string;
+  createdAt: Date;
+};
+
 // Helper: Ensure BigInt conversion is safe for Postgres
 function toBigIntU64(value: unknown): bigint {
   try {
@@ -75,6 +84,72 @@ function extractNftMint(tx: any, instruction: any): string | null {
   return firstString(tx?.events?.nft?.mint, nftTransfer?.mint);
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function getEventData(candidate: unknown): Record<string, unknown> | null {
+  const rec = asRecord(candidate);
+  if (!rec) return null;
+
+  const direct = asRecord(rec.data);
+  if (direct) return direct;
+
+  const nested = asRecord(rec.event);
+  if (nested) {
+    const nestedData = asRecord(nested.data);
+    return nestedData ?? nested;
+  }
+  return rec;
+}
+
+function collectProgramEventCandidates(tx: any): unknown[] {
+  const candidates: unknown[] = [];
+  const roots = [tx?.events, tx?.programEvents, tx?.parsedEvents, tx];
+
+  for (const root of roots) {
+    const rec = asRecord(root);
+    if (!rec) continue;
+    for (const key of ["program", "programEvents", "events", "instructions"]) {
+      const value = rec[key];
+      if (Array.isArray(value)) candidates.push(...value);
+    }
+  }
+
+  return candidates;
+}
+
+function findBatchMintedEventData(tx: any): Record<string, unknown> | null {
+  const candidates = collectProgramEventCandidates(tx);
+  for (const candidate of candidates) {
+    const rec = asRecord(candidate);
+    const name = String(rec?.name ?? rec?.eventType ?? rec?.type ?? "").toLowerCase();
+    if (!name.includes("batch") || !name.includes("mint")) continue;
+    const data = getEventData(candidate);
+    if (!data) continue;
+    if (data.name != null || data.symbol != null || data.uri != null || data.nft_mint != null || data.nftMint != null) {
+      return data;
+    }
+  }
+  return null;
+}
+
+function findRetirementEventData(tx: any): Record<string, unknown> | null {
+  const candidates = collectProgramEventCandidates(tx);
+  for (const candidate of candidates) {
+    const rec = asRecord(candidate);
+    const name = String(rec?.name ?? rec?.eventType ?? rec?.type ?? "").toLowerCase();
+    if (!name.includes("retire")) continue;
+    const data = getEventData(candidate);
+    if (!data) continue;
+    if (data.amount != null || data.total_retired != null || data.totalRetired != null || data.note != null) {
+      return data;
+    }
+  }
+  return null;
+}
+
 async function fetchMintMetadataFromDas(mint: string): Promise<{ name: string; symbol: string; uri: string } | null> {
   try {
     const response = await fetch(HELIUS_RPC_URL, {
@@ -106,10 +181,11 @@ async function fetchMintMetadataFromDas(mint: string): Promise<{ name: string; s
 // --- Webhook Handlers (Separated Logic) ---
 
 async function handleRetirement(tx: any, instruction: any, ixIndex: number) {
+  const eventData = findRetirementEventData(tx);
   const signature = tx.signature;
-  const amountRaw = instruction.data?.amount;
-  const note = String(instruction.data?.note || "");
-  const user = tx.feePayer;
+  const amountRaw = eventData?.amount ?? instruction.data?.amount;
+  const note = String(eventData?.note ?? instruction.data?.note ?? "");
+  const user = firstString(eventData?.user, tx.feePayer, tx.signer) ?? "";
 
   console.log(`🌱 [RETIREMENT] ${user} | Amount: ${amountRaw}`);
 
@@ -127,19 +203,28 @@ async function handleRetirement(tx: any, instruction: any, ixIndex: number) {
 }
 
 async function handleBatchMint(tx: any, instruction: any, ixIndex: number) {
+  const eventData = findBatchMintedEventData(tx);
   const signature = tx.signature;
   const { name, symbol, uri } = instruction.data || {};
-  const walletAddress = firstString(instruction?.accounts?.payer, tx?.feePayer, tx?.signer);
+  const walletAddress = firstString(
+    eventData?.owner,
+    instruction?.accounts?.payer,
+    tx?.feePayer,
+    tx?.signer
+  );
+  console.log(`eventData ${eventData}`);
   const nftMint = extractNftMint(tx, instruction);
   const slot = tx?.slot != null ? toBigIntU64(tx.slot) : null;
   const metadataFromDas =
     nftMint && (!name || !symbol || !uri) ? await fetchMintMetadataFromDas(nftMint) : null;
-  const resolvedName = String(name || metadataFromDas?.name || "");
-  const resolvedSymbol = String(symbol || metadataFromDas?.symbol || "");
-  const resolvedUri = String(uri || metadataFromDas?.uri || "");
+  const resolvedName = String(eventData?.name ?? name ?? metadataFromDas?.name ?? "");
+  const resolvedSymbol = String(eventData?.symbol ?? symbol ?? metadataFromDas?.symbol ?? "");
+  const resolvedUri = String(eventData?.uri ?? uri ?? metadataFromDas?.uri ?? "");
+  const resolvedMint =
+    firstString(eventData?.nft_mint, eventData?.nftMint, instruction?.accounts?.mint, nftMint) ?? null;
 
   console.log(
-    `📦 [NEW BATCH] ${signature} mint=${nftMint ?? "unknown"} name=${resolvedName} symbol=${resolvedSymbol}`
+    `📦 [NEW BATCH] ${signature} mint=${resolvedMint ?? "unknown"} name=${resolvedName} symbol=${resolvedSymbol}`
   );
   console.log(`📦 [NEW BATCH] Minted: ${signature}`);
 
@@ -152,7 +237,7 @@ async function handleBatchMint(tx: any, instruction: any, ixIndex: number) {
       name: resolvedName,
       symbol: resolvedSymbol,
       uri: resolvedUri,
-      nftMint,
+      nftMint: resolvedMint,
       slot,
     },
     update: {
@@ -160,7 +245,7 @@ async function handleBatchMint(tx: any, instruction: any, ixIndex: number) {
       name: resolvedName,
       symbol: resolvedSymbol,
       uri: resolvedUri,
-      nftMint,
+      nftMint: resolvedMint,
       slot,
     },
   });
@@ -184,6 +269,7 @@ app.post("/webhooks", async (req: Request, res: Response) => {
     }
   
     const transactions = req.body;
+    console.log(`request ${JSON.stringify(transactions)}`)
     if (!Array.isArray(transactions)) return res.sendStatus(400);
   
     try {
@@ -293,6 +379,60 @@ app.get("/api/indexer/batches", async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Indexer batches query failed:", error);
     return res.status(500).json({ error: "Failed to fetch indexed batches" });
+  }
+});
+
+app.get("/api/indexer/wallet-holdings/:wallet", async (req: Request, res: Response) => {
+  const wallet = String(req.params.wallet || "").trim();
+  if (!wallet) return res.status(400).json({ error: "Wallet is required" });
+
+  try {
+    const [batchRows, retirementRows] = await Promise.all([
+      (prisma.batchMintEvent as any).findMany({
+        where: { walletAddress: wallet },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }) as Promise<IndexedBatchRow[]>,
+      prisma.retirementEvent.findMany({
+        where: { walletAddress: wallet },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }) as Promise<IndexedRetirementRow[]>,
+    ]);
+
+    const uniqueMints = new Set(
+      batchRows.map((row) => row.nftMint).filter((mint): mint is string => Boolean(mint))
+    );
+    const totalRetiredRaw = retirementRows.reduce((acc, row) => acc + row.amount, BigInt(0));
+
+    return res.json({
+      wallet,
+      summary: {
+        mintedCount: batchRows.length,
+        uniqueMintCount: uniqueMints.size,
+        retirementsCount: retirementRows.length,
+        totalRetiredRaw: totalRetiredRaw.toString(),
+      },
+      latestMints: batchRows.slice(0, 10).map((row) => ({
+        signature: row.signature,
+        ixIndex: row.ixIndex,
+        nftMint: row.nftMint,
+        name: row.name,
+        symbol: row.symbol,
+        uri: row.uri,
+        createdAt: row.createdAt.toISOString(),
+      })),
+      latestRetirements: retirementRows.slice(0, 10).map((row) => ({
+        signature: row.signature,
+        ixIndex: row.ixIndex,
+        amountRaw: row.amount.toString(),
+        note: row.note,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Wallet holdings query failed:", error);
+    return res.status(500).json({ error: "Failed to fetch wallet holdings" });
   }
 });
 
