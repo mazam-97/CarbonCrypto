@@ -1,6 +1,6 @@
 import { PublicKey } from '@solana/web3.js';
 import type { Idl } from '@coral-xyz/anchor';
-import idlJson from '../../target/idl/carbon_credit_tokenizer.json';
+import idlJson from './idlcopy.json';
 
 export const IDL = idlJson as Idl;
 export const PROGRAM_ID = new PublicKey(idlJson.address);

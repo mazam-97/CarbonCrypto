@@ -223,6 +223,58 @@ export function UserOnchainPanel() {
         </form>
       </div>
 
+      <form className="card stack" onSubmit={onLink}>
+        <div className="section-label">Step 3</div>
+        <h3>Link vintage ID</h3>
+        <div className="grid grid-2 stack">
+          <input
+            placeholder="NFT mint"
+            value={vintage.nftMint}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setVintage({ ...vintage, nftMint: value(e) })}
+          />
+          <input
+            placeholder="Vintage ID"
+            value={vintage.vintageId}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => setVintage({ ...vintage, vintageId: value(e) })}
+          />
+        </div>
+        <button type="submit" disabled={loading}>
+          Link with vintage
+        </button>
+      </form>
+
+      <form className="card stack" onSubmit={onFractionalize}>
+        <div className="section-label">Step 4</div>
+        <h3>Fractionalize confirmed batch</h3>
+        <p className="small">Available after a verifier confirms the batch.</p>
+        <input
+          placeholder="Confirmed NFT mint"
+          value={fractionalize.nftMint}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            setFractionalize({ ...fractionalize, nftMint: value(e) })
+          }
+        />
+        <div className="grid grid-2 stack">
+          <input
+            placeholder="Fractional token name"
+            value={fractionalize.tokenName}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setFractionalize({ ...fractionalize, tokenName: value(e) })
+            }
+          />
+          <input
+            placeholder="Fractional token symbol"
+            value={fractionalize.tokenSymbol}
+            onChange={(e: ChangeEvent<HTMLInputElement>) =>
+              setFractionalize({ ...fractionalize, tokenSymbol: value(e) })
+            }
+          />
+        </div>
+        <button type="submit" disabled={loading}>
+          Fractionalize batch
+        </button>
+      </form>
+
       <div className="card stack">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
@@ -318,58 +370,6 @@ export function UserOnchainPanel() {
           </div>
         )}
       </div>
-
-      <form className="card stack" onSubmit={onLink}>
-        <div className="section-label">Step 3</div>
-        <h3>Link vintage ID</h3>
-        <div className="grid grid-2 stack">
-          <input
-            placeholder="NFT mint"
-            value={vintage.nftMint}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setVintage({ ...vintage, nftMint: value(e) })}
-          />
-          <input
-            placeholder="Vintage ID"
-            value={vintage.vintageId}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setVintage({ ...vintage, vintageId: value(e) })}
-          />
-        </div>
-        <button type="submit" disabled={loading}>
-          Link with vintage
-        </button>
-      </form>
-
-      <form className="card stack" onSubmit={onFractionalize}>
-        <div className="section-label">Step 4</div>
-        <h3>Fractionalize confirmed batch</h3>
-        <p className="small">Available after a verifier confirms the batch.</p>
-        <input
-          placeholder="Confirmed NFT mint"
-          value={fractionalize.nftMint}
-          onChange={(e: ChangeEvent<HTMLInputElement>) =>
-            setFractionalize({ ...fractionalize, nftMint: value(e) })
-          }
-        />
-        <div className="grid grid-2 stack">
-          <input
-            placeholder="Fractional token name"
-            value={fractionalize.tokenName}
-            onChange={(e: ChangeEvent<HTMLInputElement>) =>
-              setFractionalize({ ...fractionalize, tokenName: value(e) })
-            }
-          />
-          <input
-            placeholder="Fractional token symbol"
-            value={fractionalize.tokenSymbol}
-            onChange={(e: ChangeEvent<HTMLInputElement>) =>
-              setFractionalize({ ...fractionalize, tokenSymbol: value(e) })
-            }
-          />
-        </div>
-        <button type="submit" disabled={loading}>
-          Fractionalize batch
-        </button>
-      </form>
 
       <div className="card stack">
         <div className="section-label">Pool</div>
