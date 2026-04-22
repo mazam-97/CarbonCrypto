@@ -26,10 +26,15 @@ model BatchMintEvent {
   id        String   @id @default(cuid())
   signature String
   ixIndex   Int
+  walletAddress String?
   name      String
   symbol    String
   uri       String
+  nftMint   String?
+  slot      BigInt?
   createdAt DateTime @default(now())
 
   @@unique([signature, ixIndex])
+  @@index([walletAddress])
+  @@index([nftMint])
 }

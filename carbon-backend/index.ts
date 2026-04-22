@@ -24,6 +24,18 @@ app.use(cors());
 // Initialize Helius with explicit devnet cluster
 const helius = createHelius(HELIUS_API_KEY as any);
 
+type IndexedBatchRow = {
+  signature: string;
+  ixIndex: number;
+  walletAddress: string | null;
+  name: string;
+  symbol: string;
+  uri: string;
+  nftMint: string | null;
+  slot: bigint | null;
+  createdAt: Date;
+};
+
 // Helper: Ensure BigInt conversion is safe for Postgres
 function toBigIntU64(value: unknown): bigint {
   try {
@@ -31,6 +43,63 @@ function toBigIntU64(value: unknown): bigint {
     return BigInt(String(value));
   } catch {
     return BigInt(0);
+  }
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return null;
+}
+
+function extractNftMint(tx: any, instruction: any): string | null {
+  const fromInstruction = firstString(
+    instruction?.accounts?.mint,
+    instruction?.accounts?.nftMint,
+    instruction?.accounts?.nft_mint,
+    instruction?.data?.nftMint,
+    instruction?.data?.mint,
+    instruction?.data?.nft_mint
+  );
+  if (fromInstruction) return fromInstruction;
+
+  const nftTransfer = Array.isArray(tx?.tokenTransfers)
+    ? tx.tokenTransfers.find((transfer: any) => {
+        const amount = Number(transfer?.tokenAmount ?? transfer?.rawTokenAmount?.tokenAmount ?? 0);
+        const decimals = Number(transfer?.rawTokenAmount?.decimals ?? 0);
+        return amount === 1 && decimals === 0 && typeof transfer?.mint === "string";
+      })
+    : null;
+
+  return firstString(tx?.events?.nft?.mint, nftTransfer?.mint);
+}
+
+async function fetchMintMetadataFromDas(mint: string): Promise<{ name: string; symbol: string; uri: string } | null> {
+  try {
+    const response = await fetch(HELIUS_RPC_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "carbon-rails-get-asset",
+        method: "getAsset",
+        params: { id: mint },
+      }),
+    });
+    const body = (await response.json()) as any;
+    const asset = body?.result;
+    if (!asset) return null;
+
+    const metadata = asset?.content?.metadata ?? {};
+    return {
+      name: String(metadata?.name ?? ""),
+      symbol: String(metadata?.symbol ?? ""),
+      uri: String(asset?.content?.json_uri ?? ""),
+    };
+  } catch (error) {
+    console.warn("Failed to fetch DAS metadata for mint:", mint, error);
+    return null;
   }
 }
 
@@ -60,13 +129,40 @@ async function handleRetirement(tx: any, instruction: any, ixIndex: number) {
 async function handleBatchMint(tx: any, instruction: any, ixIndex: number) {
   const signature = tx.signature;
   const { name, symbol, uri } = instruction.data || {};
-  
+  const walletAddress = firstString(instruction?.accounts?.payer, tx?.feePayer, tx?.signer);
+  const nftMint = extractNftMint(tx, instruction);
+  const slot = tx?.slot != null ? toBigIntU64(tx.slot) : null;
+  const metadataFromDas =
+    nftMint && (!name || !symbol || !uri) ? await fetchMintMetadataFromDas(nftMint) : null;
+  const resolvedName = String(name || metadataFromDas?.name || "");
+  const resolvedSymbol = String(symbol || metadataFromDas?.symbol || "");
+  const resolvedUri = String(uri || metadataFromDas?.uri || "");
+
+  console.log(
+    `📦 [NEW BATCH] ${signature} mint=${nftMint ?? "unknown"} name=${resolvedName} symbol=${resolvedSymbol}`
+  );
   console.log(`📦 [NEW BATCH] Minted: ${signature}`);
 
-  return prisma.batchMintEvent.upsert({
+  return (prisma.batchMintEvent as any).upsert({
     where: { signature_ixIndex: { signature, ixIndex } },
-    create: { signature, ixIndex, name: String(name), symbol: String(symbol), uri: String(uri) },
-    update: { name: String(name), symbol: String(symbol), uri: String(uri) },
+    create: {
+      signature,
+      ixIndex,
+      walletAddress,
+      name: resolvedName,
+      symbol: resolvedSymbol,
+      uri: resolvedUri,
+      nftMint,
+      slot,
+    },
+    update: {
+      walletAddress,
+      name: resolvedName,
+      symbol: resolvedSymbol,
+      uri: resolvedUri,
+      nftMint,
+      slot,
+    },
   });
 }
 
@@ -161,6 +257,42 @@ app.get("/api/user-assets/:wallet", async (req: Request, res: Response) => {
       console.error("DAS API Complete Failure:", fallbackError.message);
       res.status(500).json({ error: "Could not fetch assets from Solana" });
     }
+  }
+});
+
+app.get("/api/indexer/batches", async (req: Request, res: Response) => {
+  const wallet = typeof req.query.wallet === "string" ? req.query.wallet : undefined;
+  const nftMint = typeof req.query.nftMint === "string" ? req.query.nftMint : undefined;
+  const takeRaw = Number(req.query.limit ?? 50);
+  const take = Number.isFinite(takeRaw) ? Math.max(1, Math.min(200, Math.trunc(takeRaw))) : 50;
+
+  try {
+    const rows = (await (prisma.batchMintEvent as any).findMany({
+      where: {
+        walletAddress: wallet,
+        nftMint,
+      },
+      orderBy: { createdAt: "desc" },
+      take,
+    })) as IndexedBatchRow[];
+
+    return res.json({
+      count: rows.length,
+      items: rows.map((row) => ({
+        signature: row.signature,
+        ixIndex: row.ixIndex,
+        walletAddress: row.walletAddress,
+        name: row.name,
+        symbol: row.symbol,
+        uri: row.uri,
+        nftMint: row.nftMint,
+        slot: row.slot?.toString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    console.error("Indexer batches query failed:", error);
+    return res.status(500).json({ error: "Failed to fetch indexed batches" });
   }
 });
 
